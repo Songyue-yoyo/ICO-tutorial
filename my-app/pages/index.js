@@ -14,24 +14,40 @@ export default function Home() {
   const zero = BigNumber.from(0);
   const [walletConnected, setWalletConnected] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [tokenToBeclaimed, setTokensToBeClaimed] = useState(false);
+  const [tokensToBeClaimed, setTokensToBeClaimed] = useState(false);
   const [balanceOfCryptoDevTokens, setBalanceOfCryptoDevTokens] = useState(zero);
   const [tokenAmount, setTokenAmount] = useState(zero);
   const [tokensMinted, setTokensMinted] = useState(zero);
   const [isOwner, setIsOwner] = useState(false);
   const web3ModalRef = useRef();
+  const [account, setAccount] = useState("");
+  const [mainProvider, setMainProvider] = useState();
+  const [mainWeb3Provider, setMainWeb3Provider] = useState();
+  const [mainChainId, setMainChainId] = useState("");
 
   const getProviderOrSigner = async (needSigner = false) => {
+    // Connect to Metamask
+    // Since we store `web3Modal` as a reference, we need to access the `current` value to get access to the underlying object
     const provider = await web3ModalRef.current.connect();
     const web3Provider = new providers.Web3Provider(provider);
+    setMainProvider(provider);
+    setMainWeb3Provider(web3Provider);
 
+    // If user is not connected to the Goerli network, let them know and throw an error
     const { chainId } = await web3Provider.getNetwork();
+    setMainChainId("0x"+chainId.toString());
+    // mainChainId.current = chainId;
     if (chainId !== 5) {
-      window.alert("Change the network to Goerli");
+      window.alert("Change the network to Goerli and try again");
       throw new Error("Change network to Goerli");
     }
 
-    if(needSigner) {
+    const accounts = await web3Provider.listAccounts();
+    if (accounts) {
+      setAccount(accounts[0]);
+    }
+
+    if (needSigner) {
       const signer = web3Provider.getSigner();
       return signer;
     }
@@ -199,29 +215,94 @@ export default function Home() {
 
   const connectWallet = async () => {
     try {
-      await getProviderOrSigner();
+      const signer = await getProviderOrSigner(true);
+      const address = await signer.getAddress();
+      // setAccount(address);
       setWalletConnected(true);
+      await getOwner();
+      await checkExistence();
     } catch (err) {
       console.error(err);
     }
   }
 
-  useEffect((() => {
-    if (!walletConnected) {
+  const disconnect = async () => {
+    try {
+      await web3ModalRef.current.clearCachedProvider();
+      setWalletConnected(false);
+      setIsOwner(false);
+      setAccount("");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  useEffect(() => {
+    // if wallet is not connected, create a new instance of Web3Modal and connect the MetaMask wallet
+  
+      // Assign the Web3Modal class to the reference object by setting it's `current` value
+      // The `current` value is persisted throughout as long as this page is open
       web3ModalRef.current = new Web3Modal({
         network: "goerli",
         providerOptions: {},
         disableInjectedProvider: false,
+        cacheProvider: true,
       });
-      connectWallet();
+      // if(!walletConnected) {
+      //   connectWallet();
+      // }
+      // connectWallet();
       getTotalTokensMinted();
       getBalanceOfCryptoDevTokens();
       getTokensToBeClaimed();
       getOwner();
+  }, []);
+
+  useEffect(() => {
+    if (mainProvider?.on) {
+      const handleAccountsChanged = (accounts) => {
+        console.log("accountsChanged", accounts);
+        if (accounts) setAccount(accounts[0]);
+      };
+
+      const handleChainChanged = (_hexChainId) => {
+        setMainChainId(_hexChainId);
+        // if (mainChainId !== "0x5") {
+        //   setWalletConnected(false);
+        //   window.alert("Change the network to Goerli and try again");
+        //   // throw new Error("Change network to Goerli");
+        // } else if (mainChainId === "0x5") {
+        //   setWalletConnected(true);
+        // }
+        if (_hexChainId === "0x5") {
+          connectWallet();
+        } else {
+          disconnect();
+          window.alert("Change the network to Goerli and try again");
+        }
+      }
+
+      const handleDisconnect = () => {
+        // console.log("disconnect");
+        disconnect();
+      }
+
+      mainProvider.on("accountsChanged", handleAccountsChanged);
+      mainProvider.on("chainChanged", handleChainChanged);
+      mainProvider.on("disconnect", handleDisconnect);
+
+      return () => {
+        if (mainProvider.removeListener) {
+          mainProvider.removeListener("accountsChanged", handleAccountsChanged);
+          mainProvider.removeListener("chainChanged",handleChainChanged);
+          mainProvider.removeListener("disconnect", handleDisconnect);
+        }
+      }
     }
-  }),[walletConnected]);
+  }, [mainProvider]);
 
   const renderButton = () => {
+    // If we are currently waiting for something, return a loading button
     if (loading) {
       return (
         <div>
@@ -229,12 +310,12 @@ export default function Home() {
         </div>
       );
     }
-
-    if (getTokensToBeClaimed > 0) {
+    // If tokens to be claimed are greater than 0, Return a claim button
+    if (tokensToBeClaimed > 0) {
       return (
         <div>
           <div className={styles.description}>
-            {getTokensToBeClaimed * 10} Tokens can be claimed!
+            {tokensToBeClaimed * 10} Tokens can be claimed!
           </div>
           <button className={styles.button} onClick={claimCryptoDevTokens}>
             Claim Tokens
@@ -242,13 +323,14 @@ export default function Home() {
         </div>
       );
     }
-
+    // If user doesn't have any tokens to claim, show the mint button
     return (
-      <div style={{display: "flex-col"}}>
+      <div style={{ display: "flex-col" }}>
         <div>
           <input
             type="number"
             placeholder="Amount of Tokens"
+            // BigNumber.from converts the `e.target.value` to a BigNumber
             onChange={(e) => setTokenAmount(BigNumber.from(e.target.value))}
             className={styles.input}
           />
@@ -258,10 +340,11 @@ export default function Home() {
           className={styles.button}
           disabled={!(tokenAmount > 0)}
           onClick={() => mintCryptoDevToken(tokenAmount)}
-        >Mint Tokens</button>
+        >
+          Mint Tokens
+        </button>
       </div>
     );
-    
   };
 
   return (
@@ -275,10 +358,14 @@ export default function Home() {
         <div>
           <h1 className={styles.title}>Welcome to Crypto Devs ICO!</h1>
           <div className={styles.description}>
-            You can claim or mint Crypto Dev Tokens here
+            You can claim or mint Crypto Dev tokens here
           </div>
-          {walletConnected ? (
-              <div>
+          {(!walletConnected || !account) ? (
+            <button onClick={connectWallet} className={styles.button}>
+              Connect your wallet
+            </button>
+          ) : (
+            <div>
               <div className={styles.description}>
                 {/* Format Ether helps us in converting a BigNumber to string */}
                 You have minted {utils.formatEther(balanceOfCryptoDevTokens)} Crypto
@@ -292,25 +379,22 @@ export default function Home() {
               {/* Display additional withdraw button if connected wallet is owner */}
                 {isOwner ? (
                   <div>
-                  {loading ? <button className={styles.button}>Loading...</button>
-                           : <button className={styles.button} onClick={withdrawCoins}>
-                               Withdraw Coins
-                             </button>
-                  }
+                    {loading ? <button className={styles.button}>Loading...</button>
+                            : <button className={styles.button} onClick={withdrawCoins}>
+                                Withdraw Coins
+                              </button>
+                    }
                   </div>
                   ) : ("")
                 }
             </div>
-          ) : (
-            <button onClick={connectWallet} className={styles.button}>
-              Connect your wallet
-            </button>
           )}
         </div>
         <div>
           <img className={styles.image} src="./0.svg" />
         </div>
       </div>
+
       <footer className={styles.footer}>
         Made with &#10084; by Crypto Devs
       </footer>
